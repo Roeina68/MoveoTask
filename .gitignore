@@ -1,0 +1,116 @@
+###############################
+# PYTHON (Django backend)
+###############################
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env/
+.env.*
+
+# Django stuff
+*.log
+*.pot
+*.pyc
+*.sqlite3
+db.sqlite3
+
+# Django static & media (generated files)
+staticfiles/
+static/
+media/
+
+# Local settings
+settings_local.py
+local_settings.py
+
+# Migrations you don't want to track (optional)
+# */migrations/*
+# !*/migrations/__init__.py
+
+###############################
+# NODE (React frontend)
+###############################
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# React build artifacts
+build/
+dist/
+.cache/
+.eslintcache
+
+# Environment files
+*.env
+*.env.local
+*.env.development
+*.env.production
+*.env.test
+
+###############################
+# EDITORS / IDEs
+###############################
+
+# VSCode
+.vscode/
+.history/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+###############################
+# OS SPECIFIC
+###############################
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+###############################
+# DOCKER / CONTAINERS
+###############################
+
+# Docker artifacts
+*.pid
+*.seed
+*.log
+*.pid.lock
+
+# Docker volumes (if accidentally generated)
+data/
+postgres-data/
+
+###############################
+# OTHER USEFUL IGNORES
+###############################
+
+# Coverage / test reports
+.coverage
+htmlcov/
+coverage.xml
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs
+logs/
+*.log
+
