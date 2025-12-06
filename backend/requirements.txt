@@ -7,4 +7,4 @@ requests==2.31.0
 gunicorn
 whitenoise
 python-dotenv
-
+setuptools
