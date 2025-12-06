@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Onboarding from './pages/Onboarding';
 import Dashboard from './pages/Dashboard';
+import Preferences from './pages/Preferences';
 import client from './api/client';
 
 function AppContent() {
@@ -95,6 +96,18 @@ function AppContent() {
         element={
           isAuthenticated && hasCompletedOnboarding ? (
             <Dashboard />
+          ) : isAuthenticated ? (
+            <Navigate to="/onboarding" />
+          ) : (
+            <Navigate to="/login" />
+          )
+        }
+      />
+      <Route
+        path="/preferences"
+        element={
+          isAuthenticated && hasCompletedOnboarding ? (
+            <Preferences />
           ) : isAuthenticated ? (
             <Navigate to="/onboarding" />
           ) : (

@@ -4,9 +4,14 @@ Django settings for config project.
 
 from pathlib import Path
 from datetime import timedelta
+import os
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+load_dotenv(BASE_DIR / ".env") 
 
 
 # Quick-start development settings - unsuitable for production
@@ -19,6 +24,11 @@ SECRET_KEY = '4c@-s)x)t)3b!jmg+@7=*%v!g5s7!uj@^hz=f*i%j9=fuuc980'
 DEBUG = True
 
 ALLOWED_HOSTS = []
+
+# Huggingface API Key
+HF_API_KEY = os.getenv("HF_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 
 
 # Application definition

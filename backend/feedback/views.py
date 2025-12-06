@@ -6,6 +6,15 @@ from .models import Vote
 from .serializers import VoteSerializer
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_votes(request):
+    """Get all votes for the current user"""
+    votes = Vote.objects.filter(user=request.user)
+    vote_dict = {vote.section: vote.vote for vote in votes}
+    return Response(vote_dict)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def vote(request):

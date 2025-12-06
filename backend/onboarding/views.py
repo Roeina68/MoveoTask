@@ -24,3 +24,37 @@ def onboarding(request):
         )
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_preferences(request):
+    """Get current user preferences"""
+    try:
+        preferences = UserPreferences.objects.get(user=request.user)
+        return Response(UserPreferencesSerializer(preferences).data)
+    except UserPreferences.DoesNotExist:
+        return Response({
+            'crypto_assets': [],
+            'investor_type': '',
+            'content_preferences': []
+        })
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_preferences(request):
+    """Update user preferences"""
+    try:
+        preferences = UserPreferences.objects.get(user=request.user)
+        serializer = UserPreferencesSerializer(preferences, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except UserPreferences.DoesNotExist:
+        # If preferences don't exist, create them
+        serializer = UserPreferencesSerializer(data=request.data)
+        if serializer.is_valid():
+            preferences = serializer.save(user=request.user)
+            return Response(UserPreferencesSerializer(preferences).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

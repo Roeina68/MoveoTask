@@ -1,16 +1,36 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import client from '../api/client';
 
-function Onboarding() {
+function Preferences() {
+  const navigate = useNavigate();
   const [cryptoAssets, setCryptoAssets] = useState([]);
   const [investorType, setInvestorType] = useState('');
   const [contentPreferences, setContentPreferences] = useState([]);
   const [error, setError] = useState('');
-  const navigate = useNavigate();
+  const [success, setSuccess] = useState('');
+  const [loading, setLoading] = useState(true);
 
   const availableAssets = ['BTC', 'ETH', 'SOL'];
   const availablePreferences = ['Market News', 'Charts', 'Social', 'Fun'];
+
+  useEffect(() => {
+    const fetchPreferences = async () => {
+      try {
+        const response = await client.get('/preferences/');
+        setCryptoAssets(response.data.crypto_assets || []);
+        setInvestorType(response.data.investor_type || '');
+        setContentPreferences(response.data.content_preferences || []);
+      } catch (err) {
+        console.error('Error fetching preferences:', err);
+        setError('Failed to load preferences');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchPreferences();
+  }, []);
 
   const handleAssetToggle = (asset) => {
     setCryptoAssets((prev) =>
@@ -31,6 +51,7 @@ function Onboarding() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setSuccess('');
 
     if (!investorType) {
       setError('Please select an investor type');
@@ -38,27 +59,33 @@ function Onboarding() {
     }
 
     try {
-      await client.post('/onboarding/', {
+      await client.put('/preferences/update/', {
         crypto_assets: cryptoAssets,
         investor_type: investorType,
         content_preferences: contentPreferences,
       });
-      // Reload to update auth state in App component
-      window.location.href = '/dashboard';
+      setSuccess('Preferences updated successfully!');
+      setTimeout(() => {
+        navigate('/dashboard');
+      }, 1500);
     } catch (err) {
       setError(
         err.response?.data?.message ||
         Object.values(err.response?.data || {}).flat().join(', ') ||
-        'Failed to save preferences'
+        'Failed to update preferences'
       );
     }
   };
 
+  if (loading) {
+    return <div className="onboarding-container">Loading...</div>;
+  }
+
   return (
     <div className="onboarding-container">
       <div className="onboarding-card">
-        <h2>Welcome! Let's get started</h2>
-        <p style={{ marginBottom: '24px', color: 'var(--textSecondary)' }}>Please answer a few questions to personalize your experience.</p>
+        <h2>Update Preferences</h2>
+        <p style={{ marginBottom: '24px', color: 'var(--textSecondary)' }}>Update your preferences to personalize your experience.</p>
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label>What crypto assets are you interested in? (check all that apply)</label>
@@ -107,12 +134,18 @@ function Onboarding() {
           </div>
 
           {error && <div className="error">{error}</div>}
-          <button type="submit">Complete Onboarding</button>
+          {success && <div style={{ color: 'var(--success)', marginBottom: '16px', padding: '12px 16px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '12px', borderLeft: '4px solid var(--success)' }}>{success}</div>}
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button type="button" onClick={() => navigate('/dashboard')} style={{ background: 'var(--card)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+              Cancel
+            </button>
+            <button type="submit">Update Preferences</button>
+          </div>
         </form>
       </div>
     </div>
   );
 }
 
-export default Onboarding;
+export default Preferences;
 

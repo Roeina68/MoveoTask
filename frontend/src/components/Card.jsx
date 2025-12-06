@@ -1,13 +1,21 @@
-function Card({ title, content, onUpvote, onDownvote }) {
+function Card({ title, content, onUpvote, onDownvote, userVote }) {
   return (
     <div className="card">
       <div className="card-header">
         <h3>{title}</h3>
         <div className="vote-buttons">
-          <button onClick={onUpvote} className="vote-btn upvote" title="Thumbs up">
+          <button 
+            onClick={onUpvote} 
+            className={`vote-btn upvote ${userVote === 1 ? 'active' : ''}`} 
+            title="Thumbs up"
+          >
             👍
           </button>
-          <button onClick={onDownvote} className="vote-btn downvote" title="Thumbs down">
+          <button 
+            onClick={onDownvote} 
+            className={`vote-btn downvote ${userVote === -1 ? 'active' : ''}`} 
+            title="Thumbs down"
+          >
             👎
           </button>
         </div>
