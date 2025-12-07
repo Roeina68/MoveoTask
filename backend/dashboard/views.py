@@ -211,12 +211,17 @@ PERIOD_DAY_MAP = {
 
 
 def fetch_history_coingecko(asset, period):
-    """Fetch OHLC-style historical prices from CoinGecko."""
+    """Fetch OHLC-style historical prices from CoinGecko with full caching + fallback."""
     coin_id = COINGECKO_IDS.get(asset)
     if not coin_id:
         return None
 
     days = PERIOD_DAY_MAP.get(period, 7)
+
+    cache_key = f"cg_hist_{asset}_{period}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached  # USE CACHED
 
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = {"vs_currency": "usd", "days": days}
@@ -224,49 +229,75 @@ def fetch_history_coingecko(asset, period):
     try:
         resp = requests.get(url, params=params, timeout=10)
 
+        if resp.status_code == 429:
+            logger.warning(f"RATE LIMITED for {asset} {period}")
+            return None
+
         if resp.status_code != 200:
-            logger.warning(f"CoinGecko returned {resp.status_code} for {asset} ({period})")
+            logger.warning(f"CG returned {resp.status_code} for {asset} {period}")
             return None
 
         data = resp.json()
-        prices = data.get("prices", [])  # CoinGecko format: [[timestamp_ms, price], ...]
+        prices = data.get("prices", [])
 
-        return [[p[0], float(p[1])] for p in prices]
+        formatted = [[p[0], float(p[1])] for p in prices]
+
+        if formatted:
+            cache.set(cache_key, formatted, 3600)  # cache 1h
+
+        return formatted
 
     except Exception as e:
-        logger.error(f"Failed fetching history for {asset} ({period}): {e}")
+        logger.error(f"Error fetching {asset} {period}: {e}")
         return None
+
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def price_history(request):
+    """
+    Fetch historical price data for a single period (e.g., 7d, 1y)
+    with caching, rate-limit protection, and fallbacks.
+    """
     try:
         prefs = UserPreferences.objects.filter(user=request.user).first()
         crypto_assets = prefs.crypto_assets if prefs else ["BTC", "ETH"]
 
+        # Default period
         period = request.GET.get("period", "7d")
 
-        cache_key = f"cg_history_{'_'.join(sorted(crypto_assets))}_{period}"
+        # Cache key for this specific user + period + their coins
+        cache_key = f"cg_single_hist_{'_'.join(sorted(crypto_assets))}_{period}"
+
         cached = cache.get(cache_key)
         if cached:
             return Response(cached)
 
         result = {}
+
+        # Attempt fetching each asset using CoinGecko
         for asset in crypto_assets:
             hist = fetch_history_coingecko(asset, period)
             if hist:
                 result[asset] = hist
 
-        if not result:
-            return Response({}, status=503)
+        # If at least one succeeded, return partial success
+        if result:
+            cache.set(cache_key, result, 3600)  # 1 hour cache
+            return Response(result)
 
-        cache.set(cache_key, result, 3600)
-        return Response(result)
+        # If all failed (rate-limited or no network), give fallback
+        fallback = {
+            "BTC": [[0, 45000]],
+            "ETH": [[0, 2500]],
+        }
+
+        return Response(fallback, status=200)
 
     except Exception as e:
-        logger.error(f"Error in price_history: {e}")
-        return Response({"error": "Failed to load chart data"}, status=500)
+        logger.error(f"price_history fatal error: {e}")
+        return Response({"error": "Chart unavailable"}, status=500)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -275,13 +306,9 @@ def price_history_all(request):
         prefs = UserPreferences.objects.filter(user=request.user).first()
         crypto_assets = prefs.crypto_assets if prefs else ["BTC", "ETH"]
 
-        cache_key = f"cg_history_all_{'_'.join(sorted(crypto_assets))}"
-        cached = cache.get(cache_key)
-        if cached:
-            return Response(cached)
+        periods = ["7d", "1y"]
 
-        periods = ["7d","1y"]
-        all_results = {}
+        result = {}
 
         for period in periods:
             period_data = {}
@@ -290,18 +317,26 @@ def price_history_all(request):
                 if hist:
                     period_data[asset] = hist
 
+            # only include periods with at least 1 successful asset
             if period_data:
-                all_results[period] = period_data
+                result[period] = period_data
 
-        if not all_results:
-            return Response({}, status=503)
+        # If some results exist → return what we have
+        if result:
+            return Response(result)
 
-        cache.set(cache_key, all_results, 3600)
-        return Response(all_results)
+        # If absolutely nothing succeeded → fallback
+        fallback = {
+            "7d": {
+                "BTC": [[0, 45000]],
+                "ETH": [[0, 2500]],
+            }
+        }
+        return Response(fallback, status=200)
 
     except Exception as e:
-        logger.error(f"Error in price_history_all: {e}")
-        return Response({"error": "Failed to load chart data"}, status=500)
+        logger.error(f"price_history_all fatal error: {e}")
+        return Response({"error": "Chart unavailable"}, status=500)
 
 
 @api_view(['GET'])
