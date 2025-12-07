@@ -30,7 +30,7 @@ function ChartsCard({ prices, onUpvote, onDownvote, userVote }) {
         setPriceHistory({});
         
         // Fetch all periods in one request - backend handles rate limiting
-        const periods = ['1d', '7d', '30d', '1y'];
+        const periods = ['7d', '1y']        ;
         const fetchResults = [];
         
         try {
@@ -372,7 +372,7 @@ function ChartsCard({ prices, onUpvote, onDownvote, userVote }) {
                 
                 {/* Time Period Selector */}
                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                  {['1d', '7d', '30d', '1y'].map((period) => (
+                  {['7d', '1y'].map((period) => (
                     <button
                       key={period}
                       onClick={() => {

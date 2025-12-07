@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from onboarding.models import UserPreferences
 from django.conf import settings
 from django.core.cache import cache
+import logging
 
 
 @api_view(['GET'])
@@ -192,136 +193,112 @@ def prices(request):
         'SOL': 100
     })
 
-BINANCE_INTERVALS = {
-    '1d': ('1h', 24),
-    '7d': ('4h', 42),
-    '30d': ('12h', 62),
-    '1y': ('1d', 365)
+
+logger = logging.getLogger(__name__)
+
+COINGECKO_IDS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
 }
 
-BINANCE_SYMBOL_MAP = {
-    'BTC': 'BTCUSDT',
-    'ETH': 'ETHUSDT',
-    'SOL': 'SOLUSDT'
+PERIOD_DAY_MAP = {
+    "1d": 1,
+    "7d": 7,
+    "30d": 30,
+    "1y": 365,
 }
 
 
-def fetch_binance_history(crypto_assets, time_period):
-    """Helper function to fetch Binance OHLC data for given assets and period"""
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    interval, limit = BINANCE_INTERVALS.get(time_period, ('4h', 42))
-    history = {}
-    
-    for asset in crypto_assets:
-        symbol = BINANCE_SYMBOL_MAP.get(asset)
-        if not symbol:
-            continue
-            
-        try:
-            url = "https://api.binance.com/api/v3/klines"
-            params = {
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit
-            }
-            
-            resp = requests.get(url, params=params, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                # Format as CoinGecko-style [timestamp, price]
-                # Binance klines: [open_time, open, high, low, close, volume, ...]
-                formatted = [
-                    [int(item[0]), float(item[4])]  # open_time (ms), close price
-                    for item in data
-                ]
-                history[asset] = formatted
-            else:
-                logger.warning(f"Binance returned status {resp.status_code} for {asset} ({time_period})")
-        except Exception as e:
-            logger.warning(f"Failed fetching Binance data for {asset} ({time_period}): {e}")
-            continue
-    
-    return history
+def fetch_history_coingecko(asset, period):
+    """Fetch OHLC-style historical prices from CoinGecko."""
+    coin_id = COINGECKO_IDS.get(asset)
+    if not coin_id:
+        return None
+
+    days = PERIOD_DAY_MAP.get(period, 7)
+
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    params = {"vs_currency": "usd", "days": days}
+
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+
+        if resp.status_code != 200:
+            logger.warning(f"CoinGecko returned {resp.status_code} for {asset} ({period})")
+            return None
+
+        data = resp.json()
+        prices = data.get("prices", [])  # CoinGecko format: [[timestamp_ms, price], ...]
+
+        return [[p[0], float(p[1])] for p in prices]
+
+    except Exception as e:
+        logger.error(f"Failed fetching history for {asset} ({period}): {e}")
+        return None
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def price_history(request):
-    """Fetch historical price data for a single period using Binance OHLC API"""
-    import logging
-    logger = logging.getLogger(__name__)
-    
     try:
-        # Get user assets
-        try:
-            prefs = UserPreferences.objects.get(user=request.user)
-            crypto_assets = prefs.crypto_assets
-        except UserPreferences.DoesNotExist:
-            crypto_assets = ['BTC', 'ETH']
-        
-        # Get period
-        time_period = request.GET.get('period', '7d')
-        
-        # Check cache
-        cache_key = f"binance_history_{'_'.join(sorted(crypto_assets))}_{time_period}"
+        prefs = UserPreferences.objects.filter(user=request.user).first()
+        crypto_assets = prefs.crypto_assets if prefs else ["BTC", "ETH"]
+
+        period = request.GET.get("period", "7d")
+
+        cache_key = f"cg_history_{'_'.join(sorted(crypto_assets))}_{period}"
         cached = cache.get(cache_key)
         if cached:
             return Response(cached)
-        
-        # Fetch from Binance
-        history = fetch_binance_history(crypto_assets, time_period)
-        
-        if history:
-            # Cache for 1 hour
-            cache.set(cache_key, history, 3600)
-            return Response(history)
-        else:
+
+        result = {}
+        for asset in crypto_assets:
+            hist = fetch_history_coingecko(asset, period)
+            if hist:
+                result[asset] = hist
+
+        if not result:
             return Response({}, status=503)
-            
+
+        cache.set(cache_key, result, 3600)
+        return Response(result)
+
     except Exception as e:
         logger.error(f"Error in price_history: {e}")
         return Response({"error": "Failed to load chart data"}, status=500)
 
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def price_history_all(request):
-    """Fetch historical price data for ALL periods at once using Binance OHLC API"""
-    import logging
-    logger = logging.getLogger(__name__)
-    
     try:
-        # Get user assets
-        try:
-            prefs = UserPreferences.objects.get(user=request.user)
-            crypto_assets = prefs.crypto_assets
-        except UserPreferences.DoesNotExist:
-            crypto_assets = ['BTC', 'ETH']
-        
-        # Check cache for all periods
-        cache_key = f"binance_history_all_{'_'.join(sorted(crypto_assets))}"
+        prefs = UserPreferences.objects.filter(user=request.user).first()
+        crypto_assets = prefs.crypto_assets if prefs else ["BTC", "ETH"]
+
+        cache_key = f"cg_history_all_{'_'.join(sorted(crypto_assets))}"
         cached = cache.get(cache_key)
         if cached:
             return Response(cached)
-        
-        # Fetch all periods
-        periods = ['1d', '7d', '30d', '1y']
-        all_periods_data = {}
-        
-        for time_period in periods:
-            history = fetch_binance_history(crypto_assets, time_period)
-            if history:
-                all_periods_data[time_period] = history
-        
-        if all_periods_data:
-            # Cache for 1 hour
-            cache.set(cache_key, all_periods_data, 3600)
-            return Response(all_periods_data)
-        else:
+
+        periods = ["7d","1y"]
+        all_results = {}
+
+        for period in periods:
+            period_data = {}
+            for asset in crypto_assets:
+                hist = fetch_history_coingecko(asset, period)
+                if hist:
+                    period_data[asset] = hist
+
+            if period_data:
+                all_results[period] = period_data
+
+        if not all_results:
             return Response({}, status=503)
-            
+
+        cache.set(cache_key, all_results, 3600)
+        return Response(all_results)
+
     except Exception as e:
         logger.error(f"Error in price_history_all: {e}")
         return Response({"error": "Failed to load chart data"}, status=500)
