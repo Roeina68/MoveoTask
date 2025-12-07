@@ -25,7 +25,7 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ["https://moveotaskroei.vercel.app/"]
+ALLOWED_HOSTS = ["https://moveo-task-two.vercel.app/"]
 
 # Huggingface API Key
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
