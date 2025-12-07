@@ -25,9 +25,24 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ["https://moveo-task-two.vercel.app/"]
+ALLOWED_HOSTS = [
+    "moveo-task-two.vercel.app",
+    "moveotask-46rm.onrender.com",
+    "localhost",
+    "127.0.0.1"
+]
 
-# Huggingface API Key
+
+CORS_ALLOWED_ORIGINS = [
+    "https://moveo-task-two.vercel.app",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://moveo-task-two.vercel.app",
+]
+
+
+# OpenRouter API Key
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 
