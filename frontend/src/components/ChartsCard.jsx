@@ -1,192 +1,556 @@
-import { useEffect, useState } from "react";
-import { Line } from "react-chartjs-2";
-import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend } from "chart.js";
-import client from "../api/client";
-import { ThumbsUp, ThumbsDown } from "lucide-react";
+import { useEffect, useRef, useState } from 'react';
+import Card from './Card';
+import ChartsSkeleton from './ChartsSkeleton';
+import client from '../api/client';
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
-
-const PERIODS = ["7d", "1y"]; // we removed unsupported intervals
-
-export default function ChartsCard() {
-  const [historyData, setHistoryData] = useState(null);
-  const [visibleCoins, setVisibleCoins] = useState(["BTC", "ETH"]);
-  const [selectedPeriod, setSelectedPeriod] = useState("7d");
+function ChartsCard({ prices, onUpvote, onDownvote, userVote }) {
+  const chartContainerRef = useRef(null);
+  const [timePeriod, setTimePeriod] = useState('7d'); // 1d, 7d, 30d, 1y
+  const [priceHistory, setPriceHistory] = useState({});
+  const [allHistoryData, setAllHistoryData] = useState({}); // Store all periods: { '1d': {...}, '7d': {...}, etc }
   const [loading, setLoading] = useState(true);
-  const [errorState, setErrorState] = useState("");
+  const [error, setError] = useState(null); // Track error state: 'rate_limit', 'network', 'no_data', null
+  const [retryCount, setRetryCount] = useState(0);
+  const [selectedAssets, setSelectedAssets] = useState(() => {
+    // Initialize with all available assets from prices
+    return Object.keys(prices || {});
+  });
+
+  // Helper function to validate price data (reject fallback data with timestamp 0)
+  const isValidPriceData = (data) => {
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+      return false;
+    }
+    
+    // Check if data has valid price arrays with real timestamps
+    return Object.values(data).some(arr => {
+      if (!Array.isArray(arr) || arr.length === 0) return false;
+      // Check if first item has valid timestamp (not 0) and price
+      const firstItem = arr[0];
+      return Array.isArray(firstItem) && 
+             firstItem.length >= 2 && 
+             firstItem[0] > 0 && // Valid timestamp
+             typeof firstItem[1] === 'number' && 
+             firstItem[1] > 0; // Valid price
+    });
+  };
+
+  // Fetch all time periods at once when component mounts or prices change
+  useEffect(() => {
+    const fetchAllHistory = async (retryAttempt = 0) => {
+      if (!prices || Object.keys(prices).length === 0) {
+        setLoading(false);
+        setPriceHistory({});
+        setAllHistoryData({});
+        setError('no_data');
+        return;
+      }
+
+      try {
+        // Only show loading on first attempt, keep cached data visible on retries
+        if (retryAttempt === 0) {
+          setLoading(true);
+        }
+        setError(null);
+        
+        // Fetch all periods in one request - backend handles rate limiting
+        const periods = ['7d', '1y'];
+        const fetchResults = [];
+        
+        try {
+          const response = await client.get('/dashboard/price-history-all/');
+          const responseData = response.data || {};
+          
+          // Convert to our expected format
+          periods.forEach(period => {
+            const data = responseData[period] || {};
+            const hasValidData = isValidPriceData(data);
+            
+            if (hasValidData) {
+              fetchResults.push({ period, data, success: true });
+            } else {
+              console.warn(`No valid data for ${period} period`);
+              fetchResults.push({ period, data: {}, success: false });
+            }
+          });
+        } catch (err) {
+          console.error('Error fetching all price history:', err);
+          
+          // Check for rate limit (429) or network errors
+          const status = err.response?.status;
+          if (status === 429) {
+            setError('rate_limit');
+            // Retry with exponential backoff (max 2 retries)
+            if (retryAttempt < 2) {
+              const delay = Math.pow(2, retryAttempt) * 2000; // 2s, 4s
+              setTimeout(() => {
+                setRetryCount(prev => prev + 1);
+                fetchAllHistory(retryAttempt + 1);
+              }, delay);
+              return; // Don't clear data, keep showing cached if available
+            }
+          } else if (err.code === 'ECONNABORTED' || err.message?.includes('timeout') || err.message?.includes('Network')) {
+            setError('network');
+          } else {
+            setError('no_data');
+          }
+          
+          // If the all endpoint fails, mark all as failed
+          periods.forEach(period => {
+            fetchResults.push({ period, data: {}, success: false });
+          });
+        }
+        
+        const results = fetchResults;
+        
+        // Store all data - only store if it has valid price arrays
+        const allData = {};
+        results.forEach(({ period, data, success }) => {
+          if (success && isValidPriceData(data)) {
+            allData[period] = data;
+          }
+        });
+        
+        // Only set data if we have at least one valid period
+        if (Object.keys(allData).length > 0) {
+          setAllHistoryData(allData);
+          setError(null); // Clear error if we got valid data
+          
+          // Set initial period data - prefer requested period, fallback to any available
+          if (allData[timePeriod] && Object.keys(allData[timePeriod]).length > 0) {
+            setPriceHistory(allData[timePeriod]);
+          } else {
+            // Try to use any available data as fallback
+            const firstAvailablePeriod = Object.keys(allData)[0];
+            if (firstAvailablePeriod && allData[firstAvailablePeriod]) {
+              setPriceHistory(allData[firstAvailablePeriod]);
+              // Only update timePeriod if we have to fallback
+              if (firstAvailablePeriod !== timePeriod) {
+                setTimePeriod(firstAvailablePeriod);
+              }
+            } else {
+              setPriceHistory({});
+            }
+          }
+        } else {
+          // No valid data received - keep existing cached data if available
+          if (Object.keys(allHistoryData).length === 0) {
+            console.warn('No valid price history data received for any period');
+            setAllHistoryData({});
+            setPriceHistory({});
+            if (!error) {
+              setError('no_data');
+            }
+          } else {
+            // Keep showing cached data even if new fetch failed
+            console.warn('Failed to fetch new data, showing cached data');
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching price history:', err);
+        // Don't clear existing data on error - keep showing cached
+        if (Object.keys(allHistoryData).length === 0) {
+          setAllHistoryData({});
+          setPriceHistory({});
+          setError('no_data');
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchAllHistory();
+  }, [prices, retryCount]); // Include retryCount to trigger retries
+
+  // Update selected assets when prices change
+  useEffect(() => {
+    if (prices && Object.keys(prices).length > 0) {
+      const availableAssets = Object.keys(prices);
+      // Keep only assets that are still available, add new ones
+      setSelectedAssets(prev => {
+        const filtered = prev.filter(asset => availableAssets.includes(asset));
+        const newAssets = availableAssets.filter(asset => !prev.includes(asset));
+        return [...filtered, ...newAssets];
+      });
+    }
+  }, [prices]);
+
+  // Manual retry function
+  const handleRetry = () => {
+    setRetryCount(prev => prev + 1);
+    setError(null);
+  };
+
+  // Update displayed data when time period changes (using cached data)
+  useEffect(() => {
+    if (!loading && allHistoryData[timePeriod] && Object.keys(allHistoryData[timePeriod]).length > 0) {
+      setPriceHistory(allHistoryData[timePeriod]);
+    } else if (!loading && Object.keys(allHistoryData).length > 0) {
+      // If current period not available, use first available
+      const firstAvailable = Object.keys(allHistoryData)[0];
+      if (firstAvailable) {
+        setPriceHistory(allHistoryData[firstAvailable]);
+      }
+    }
+  }, [timePeriod, allHistoryData, loading]);
 
   useEffect(() => {
-    fetchHistory();
-    // eslint-disable-next-line
-  }, []);
-
-  async function fetchHistory() {
-    try {
-      setLoading(true);
-      setErrorState("");
-
-      const resp = await client.get("/dashboard/price-history-all/");
-      const data = resp.data;
-
-      // If backend indicates rate limit or failure
-      if (!data || data.error) {
-        setErrorState("Chart data is temporarily unavailable due to API rate limits.");
-        setHistoryData(null);
-        return;
-      }
-
-      // If backend returns empty object
-      if (Object.keys(data).length === 0) {
-        setErrorState("No chart data available right now.");
-        setHistoryData(null);
-        return;
-      }
-
-      setHistoryData(data);
-    } catch (err) {
-      setErrorState("Failed to load chart data.");
-      setHistoryData(null);
-    } finally {
-      setLoading(false);
+    if (!chartContainerRef.current || Object.keys(priceHistory).length === 0 || loading) {
+      return;
     }
-  }
 
-  function toggleCoin(coin) {
-    setVisibleCoins((prev) =>
-      prev.includes(coin)
-        ? prev.filter((c) => c !== coin)
-        : [...prev, coin]
-    );
-  }
+    // Small delay to ensure canvas is ready and DOM is updated
+    const timeoutId = setTimeout(() => {
+      if (!chartContainerRef.current) return;
+      
+      const canvas = chartContainerRef.current;
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      // Get actual canvas dimensions
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width || canvas.offsetWidth || 400;
+      const height = 180;
+      
+      // Set canvas size (this clears the canvas)
+      canvas.width = width;
+      canvas.height = height;
 
-  function formatChart(period) {
-    if (!historyData || !historyData[period]) return null;
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = 'transparent';
+    ctx.fillRect(0, 0, width, height);
 
-    const series = historyData[period];
+    // Filter assets based on selectedAssets
+    const availableAssets = Object.keys(priceHistory).filter(asset => selectedAssets.includes(asset));
+    const colors = ['#3B82F6', '#6366F1', '#10B981'];
+    const padding = { top: 25, right: 20, bottom: 35, left: 45 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
 
-    const labels = extractLabels(series);
-    const datasets = buildDatasets(series);
+    // Process price history data - format: [[timestamp, price], ...]
+    const processedData = {};
+    const allPrices = [];
+    const allTimestamps = [];
+    
+    availableAssets.forEach(asset => {
+      const rawData = priceHistory[asset];
+      if (rawData && Array.isArray(rawData) && rawData.length > 0) {
+        // Extract prices and timestamps
+        const prices = rawData.map(item => item[1]); // item is [timestamp, price]
+        const timestamps = rawData.map(item => item[0]);
+        processedData[asset] = { prices, timestamps };
+        allPrices.push(...prices);
+        allTimestamps.push(...timestamps);
+      }
+    });
 
-    return { labels, datasets };
-  }
+    if (allPrices.length === 0) return;
 
-  function extractLabels(series) {
-    const coin = Object.keys(series)[0];
-    const timestamps = series[coin]?.map((p) => p[0]) || [];
+    // Find min/max across all assets
+    const minPrice = Math.min(...allPrices);
+    const maxPrice = Math.max(...allPrices);
+    const priceRange = maxPrice - minPrice || 1;
 
-    return timestamps.map((ts) =>
-      new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-    );
-  }
+    // Draw grid lines
+    ctx.strokeStyle = 'rgba(203, 213, 225, 0.1)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = padding.top + (chartHeight / 4) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(width - padding.right, y);
+      ctx.stroke();
+    }
 
-  function buildDatasets(series) {
-    return Object.entries(series)
-      .filter(([coin]) => visibleCoins.includes(coin))
-      .map(([coin, points]) => ({
-        label: coin,
-        data: points.map((p) => p[1]),
-        borderColor: coin === "BTC" ? "#4A90E2" : "#8E44AD",
-        backgroundColor: "transparent",
-        borderWidth: 2,
-        tension: 0.4,
-      }));
-  }
+    // Draw price lines for each asset
+    availableAssets.forEach((asset, assetIndex) => {
+      if (!processedData[asset]) return;
+      
+      const { prices, timestamps } = processedData[asset];
+      const color = colors[assetIndex % colors.length];
+      
+      // Draw line
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      prices.forEach((price, pointIndex) => {
+        const x = padding.left + (chartWidth / (prices.length - 1)) * pointIndex;
+        const y = padding.top + chartHeight - ((price - minPrice) / priceRange) * chartHeight;
+        if (pointIndex === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
 
-  const chartData = formatChart(selectedPeriod);
+      // Draw points (only on key points to avoid clutter)
+      ctx.fillStyle = color;
+      const pointInterval = Math.max(1, Math.floor(prices.length / 10)); // Show ~10 points max
+      prices.forEach((price, pointIndex) => {
+        if (pointIndex % pointInterval === 0 || pointIndex === prices.length - 1) {
+          const x = padding.left + (chartWidth / (prices.length - 1)) * pointIndex;
+          const y = padding.top + chartHeight - ((price - minPrice) / priceRange) * chartHeight;
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+
+      // Draw asset label
+      const lastX = padding.left + chartWidth;
+      const lastPrice = prices[prices.length - 1];
+      const lastY = padding.top + chartHeight - ((lastPrice - minPrice) / priceRange) * chartHeight;
+      ctx.fillStyle = color;
+      ctx.font = '11px Inter';
+      ctx.textAlign = 'left';
+      ctx.fillText(asset, lastX + 8, lastY);
+    });
+
+    // Draw Y-axis labels
+    ctx.fillStyle = 'var(--textMuted)';
+    ctx.font = '10px Inter';
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+      const price = minPrice + (priceRange / 4) * (4 - i);
+      const y = padding.top + (chartHeight / 4) * i;
+      const label = price >= 1000 ? `$${(price / 1000).toFixed(1)}k` : `$${price.toFixed(0)}`;
+      ctx.fillText(label, padding.left - 8, y + 3);
+    }
+
+    // Draw X-axis labels with actual dates
+    ctx.fillStyle = 'var(--textMuted)';
+    ctx.font = '9px Inter';
+    ctx.textAlign = 'center';
+    
+    // Get timestamps from first asset (all should have same timestamps)
+    const firstAsset = availableAssets.find(a => processedData[a]);
+    if (firstAsset && processedData[firstAsset]) {
+      const timestamps = processedData[firstAsset].timestamps;
+      const numLabels = timePeriod === '1d' ? 6 : timePeriod === '7d' ? 7 : timePeriod === '30d' ? 5 : 6;
+      const labelInterval = Math.max(1, Math.floor(timestamps.length / numLabels));
+      
+      for (let i = 0; i < timestamps.length; i += labelInterval) {
+        if (i >= timestamps.length) break;
+        const timestamp = timestamps[i];
+        const date = new Date(timestamp);
+        
+        let label;
+        if (timePeriod === '1d') {
+          label = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        } else if (timePeriod === '7d') {
+          label = date.toLocaleDateString('en-US', { weekday: 'short' });
+        } else if (timePeriod === '30d') {
+          label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        } else { // 1y
+          label = date.toLocaleDateString('en-US', { month: 'short' });
+        }
+        
+        const x = padding.left + (chartWidth / (timestamps.length - 1)) * i;
+        ctx.fillText(label, x, height - 10);
+      }
+      
+      // Always show last date
+      if (timestamps.length > 0) {
+        const lastTimestamp = timestamps[timestamps.length - 1];
+        const lastDate = new Date(lastTimestamp);
+        let lastLabel;
+        if (timePeriod === '1d') {
+          lastLabel = lastDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        } else if (timePeriod === '7d') {
+          lastLabel = lastDate.toLocaleDateString('en-US', { weekday: 'short' });
+        } else if (timePeriod === '30d') {
+          lastLabel = lastDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        } else {
+          lastLabel = lastDate.toLocaleDateString('en-US', { month: 'short' });
+        }
+        const lastX = padding.left + chartWidth;
+        ctx.fillText(lastLabel, lastX, height - 10);
+      }
+    }
+    }, 100);
+    
+    return () => clearTimeout(timeoutId);
+  }, [priceHistory, timePeriod, loading, selectedAssets]);
 
   return (
-    <div className="rounded-xl bg-[#0f1a2b] p-6 border border-blue-900/40 shadow-lg">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-semibold text-white">Price Trends</h2>
-
-        <div className="flex gap-3">
-          <button className="p-2 rounded-lg bg-blue-900/30 hover:bg-blue-800/40 transition">
-            <ThumbsUp size={20} className="text-yellow-300" />
-          </button>
-
-          <button className="p-2 rounded-lg bg-blue-900/30 hover:bg-blue-800/40 transition">
-            <ThumbsDown size={20} className="text-yellow-300" />
-          </button>
+    <Card
+      title="Price Trends"
+      content={
+        <div style={{ width: '100%', position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
+          {loading && Object.keys(allHistoryData).length === 0 ? (
+            <ChartsSkeleton />
+          ) : Object.keys(priceHistory).length > 0 ? (
+            <>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '12px', flexShrink: 0 }}>
+                {/* Asset Filter */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--textMuted)', marginRight: '4px' }}>Show:</span>
+                  {Object.keys(priceHistory).map((asset) => (
+                    <label
+                      key={asset}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                        color: selectedAssets.includes(asset) ? 'var(--text)' : 'var(--textMuted)',
+                        userSelect: 'none'
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedAssets.includes(asset)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedAssets(prev => [...prev, asset]);
+                          } else {
+                            // Don't allow unchecking if it's the last one
+                            if (selectedAssets.length > 1) {
+                              setSelectedAssets(prev => prev.filter(a => a !== asset));
+                            }
+                          }
+                        }}
+                        style={{
+                          cursor: 'pointer',
+                          accentColor: 'var(--primary)'
+                        }}
+                      />
+                      <span style={{ fontWeight: selectedAssets.includes(asset) ? '600' : '400' }}>{asset}</span>
+                    </label>
+                  ))}
+                </div>
+                
+                {/* Time Period Selector */}
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                  {['7d', '1y'].map((period) => (
+                    <button
+                      key={period}
+                      onClick={() => {
+                        if (allHistoryData[period] && Object.keys(allHistoryData[period]).length > 0) {
+                          setTimePeriod(period);
+                        }
+                      }}
+                      disabled={!allHistoryData[period] || Object.keys(allHistoryData[period] || {}).length === 0}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '11px',
+                        background: timePeriod === period ? 'var(--primary)' : 'rgba(255, 255, 255, 0.05)',
+                        color: timePeriod === period ? 'white' : 'var(--textSecondary)',
+                        border: `1px solid ${timePeriod === period ? 'var(--primary)' : 'var(--border)'}`,
+                        borderRadius: '6px',
+                        cursor: (!allHistoryData[period] || Object.keys(allHistoryData[period] || {}).length === 0) ? 'not-allowed' : 'pointer',
+                        transition: 'all 0.2s',
+                        fontFamily: 'Inter, sans-serif',
+                        fontWeight: timePeriod === period ? '600' : '400',
+                        opacity: (!allHistoryData[period] || Object.keys(allHistoryData[period] || {}).length === 0) ? 0.5 : 1
+                      }}
+                    >
+                      {period === '1d' ? '1D' : period === '7d' ? '7D' : period === '30d' ? '30D' : '1Y'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ width: '100%', height: '180px', position: 'relative', overflow: 'hidden', flexShrink: 0 }}>
+                <canvas
+                  ref={chartContainerRef}
+                  style={{ width: '100%', height: '180px', borderRadius: '8px', display: 'block' }}
+                />
+              </div>
+            </>
+          ) : (
+            <div style={{ padding: '20px', textAlign: 'center', color: 'var(--textMuted)' }}>
+              {loading ? (
+                'Loading chart data...'
+              ) : error === 'rate_limit' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
+                  <div style={{ fontSize: '13px', color: 'var(--textSecondary)' }}>
+                    Chart data temporarily unavailable due to rate limits
+                  </div>
+                  <button
+                    onClick={handleRetry}
+                    style={{
+                      padding: '6px 16px',
+                      fontSize: '12px',
+                      background: 'var(--primary)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontFamily: 'Inter, sans-serif',
+                      fontWeight: '500',
+                      transition: 'opacity 0.2s'
+                    }}
+                    onMouseEnter={(e) => e.target.style.opacity = '0.9'}
+                    onMouseLeave={(e) => e.target.style.opacity = '1'}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : error === 'network' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
+                  <div style={{ fontSize: '13px', color: 'var(--textSecondary)' }}>
+                    Network error. Please check your connection.
+                  </div>
+                  <button
+                    onClick={handleRetry}
+                    style={{
+                      padding: '6px 16px',
+                      fontSize: '12px',
+                      background: 'var(--primary)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontFamily: 'Inter, sans-serif',
+                      fontWeight: '500',
+                      transition: 'opacity 0.2s'
+                    }}
+                    onMouseEnter={(e) => e.target.style.opacity = '0.9'}
+                    onMouseLeave={(e) => e.target.style.opacity = '1'}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
+                  <div style={{ fontSize: '13px', color: 'var(--textSecondary)' }}>
+                    Chart data unavailable
+                  </div>
+                  <button
+                    onClick={handleRetry}
+                    style={{
+                      padding: '6px 16px',
+                      fontSize: '12px',
+                      background: 'var(--primary)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontFamily: 'Inter, sans-serif',
+                      fontWeight: '500',
+                      transition: 'opacity 0.2s'
+                    }}
+                    onMouseEnter={(e) => e.target.style.opacity = '0.9'}
+                    onMouseLeave={(e) => e.target.style.opacity = '1'}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-      </div>
-
-      {/* Coin toggles */}
-      <div className="flex gap-4 items-center mb-4 text-white">
-        <span className="opacity-70">Show:</span>
-        <label className="flex items-center gap-1 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={visibleCoins.includes("BTC")}
-            onChange={() => toggleCoin("BTC")}
-          />
-          BTC
-        </label>
-        <label className="flex items-center gap-1 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={visibleCoins.includes("ETH")}
-            onChange={() => toggleCoin("ETH")}
-          />
-          ETH
-        </label>
-      </div>
-
-      {/* Period buttons */}
-      <div className="flex gap-4 mb-6">
-        {PERIODS.map((p) => (
-          <button
-            key={p}
-            onClick={() => setSelectedPeriod(p)}
-            className={`px-6 py-2 rounded-lg transition ${
-              selectedPeriod === p
-                ? "bg-blue-600 text-white"
-                : "bg-blue-900/40 text-gray-400"
-            }`}
-          >
-            {p.toUpperCase()}
-          </button>
-        ))}
-      </div>
-
-      {/* Loading state */}
-      {loading && (
-        <div className="text-gray-400 text-center py-10">Loading chart...</div>
-      )}
-
-      {/* Error / fallback state */}
-      {!loading && errorState && (
-        <div className="text-gray-400 text-center py-10">
-          <div className="text-lg mb-1">📉 {errorState}</div>
-          <div className="text-sm opacity-60">Try again in a few minutes.</div>
-        </div>
-      )}
-
-      {/* No dataset available */}
-      {!loading && !errorState && !chartData && (
-        <div className="text-gray-400 text-center py-10">
-          No price history available.
-        </div>
-      )}
-
-      {/* Chart */}
-      {!loading && !errorState && chartData && (
-        <div className="h-64">
-          <Line
-            data={chartData}
-            options={{
-              responsive: true,
-              maintainAspectRatio: false,
-              plugins: {
-                legend: { labels: { color: "white" } },
-              },
-              scales: {
-                x: { ticks: { color: "white" } },
-                y: { ticks: { color: "white" } },
-              },
-            }}
-          />
-        </div>
-      )}
-    </div>
+      }
+      onUpvote={onUpvote}
+      onDownvote={onDownvote}
+      userVote={userVote}
+    />
   );
 }
+
+export default ChartsCard;
